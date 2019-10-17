@@ -8,7 +8,7 @@ import (
 )
 
 func TestResolver_LookupHost(t *testing.T) {
-	r := &Resolver{}
+	r := NewDNSResolver(128)
 	var cacheMiss bool
 	r.OnCacheMiss = func() {
 		cacheMiss = true
@@ -38,24 +38,8 @@ func TestResolver_LookupHost(t *testing.T) {
 	}
 }
 
-func TestClearCache(t *testing.T) {
-	r := &Resolver{}
-	_, _ = r.LookupHost(context.Background(), "google.com")
-	if e := r.cache["hgoogle.com"]; e != nil && !e.used {
-		t.Error("cache entry used flag is false, want true")
-	}
-	r.Refresh(true)
-	if e := r.cache["hgoogle.com"]; e != nil && e.used {
-		t.Error("cache entry used flag is true, want false")
-	}
-	r.Refresh(true)
-	if e := r.cache["hgoogle.com"]; e != nil {
-		t.Error("cache entry is not cleared")
-	}
-}
-
 func TestRaceOnDelete(t *testing.T) {
-	r := &Resolver{}
+	r := NewDNSResolver(128)
 	ls := make(chan bool)
 	rs := make(chan bool)
 
@@ -77,7 +61,7 @@ func TestRaceOnDelete(t *testing.T) {
 			case <-rs:
 				return
 			default:
-				r.Refresh(true)
+				r.Refresh()
 				time.Sleep(time.Millisecond)
 			}
 		}
