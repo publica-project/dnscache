@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru"
+
 	"golang.org/x/sync/singleflight"
 )
 
@@ -24,7 +26,7 @@ type Resolver struct {
 
 	once  sync.Once
 	mu    sync.RWMutex
-	cache map[string]*cacheEntry
+	cache *lru.Cache
 
 	// OnCacheMiss is executed if the host or address is not included in
 	// the cache and the default lookup is executed.
@@ -32,57 +34,34 @@ type Resolver struct {
 }
 
 type cacheEntry struct {
-	rrs  []string
-	err  error
-	used bool
+	rrs []string
+	err error
+}
+
+func NewDNSResolver(cacheSize int) *Resolver {
+	cache, _ := lru.New(cacheSize)
+	return &Resolver{
+		cache: cache,
+	}
 }
 
 // LookupAddr performs a reverse lookup for the given address, returning a list
 // of names mapping to that address.
 func (r *Resolver) LookupAddr(ctx context.Context, addr string) (names []string, err error) {
-	r.once.Do(r.init)
 	return r.lookup(ctx, "r"+addr)
 }
 
 // LookupHost looks up the given host using the local resolver. It returns a
 // slice of that host's addresses.
 func (r *Resolver) LookupHost(ctx context.Context, host string) (addrs []string, err error) {
-	r.once.Do(r.init)
 	return r.lookup(ctx, "h"+host)
 }
 
-// Refresh refreshes cached entries which has been used at least once since the
-// last Refresh. If clearUnused is true, entries which hasn't be used since the
-// last Refresh are removed from the cache.
-func (r *Resolver) Refresh(clearUnused bool) {
-	r.once.Do(r.init)
-	r.mu.RLock()
-	update := make([]string, 0, len(r.cache))
-	del := make([]string, 0, len(r.cache))
-	for key, entry := range r.cache {
-		if entry.used {
-			update = append(update, key)
-		} else if clearUnused {
-			del = append(del, key)
-		}
+// Refresh refreshes all cached entries
+func (r *Resolver) Refresh() {
+	for _, key := range r.cache.Keys() {
+		r.update(context.Background(), key.(string))
 	}
-	r.mu.RUnlock()
-
-	if len(del) > 0 {
-		r.mu.Lock()
-		for _, key := range del {
-			delete(r.cache, key)
-		}
-		r.mu.Unlock()
-	}
-
-	for _, key := range update {
-		r.update(context.Background(), key, false)
-	}
-}
-
-func (r *Resolver) init() {
-	r.cache = make(map[string]*cacheEntry)
 }
 
 // lookupGroup merges lookup calls together for lookups for the same host. The
@@ -91,17 +70,17 @@ var lookupGroup singleflight.Group
 
 func (r *Resolver) lookup(ctx context.Context, key string) (rrs []string, err error) {
 	var found bool
-	rrs, err, found = r.load(key)
+	rrs, found, err = r.load(key)
 	if !found {
 		if r.OnCacheMiss != nil {
 			r.OnCacheMiss()
 		}
-		rrs, err = r.update(ctx, key, true)
+		rrs, err = r.update(ctx, key)
 	}
 	return
 }
 
-func (r *Resolver) update(ctx context.Context, key string, used bool) (rrs []string, err error) {
+func (r *Resolver) update(ctx context.Context, key string) (rrs []string, err error) {
 	c := lookupGroup.DoChan(key, r.lookupFunc(key))
 	select {
 	case <-ctx.Done():
@@ -117,7 +96,7 @@ func (r *Resolver) update(ctx context.Context, key string, used bool) (rrs []str
 			// We had concurrent lookups, check if the cache is already updated
 			// by a friend.
 			var found bool
-			rrs, err, found = r.load(key)
+			rrs, found, err = r.load(key)
 			if found {
 				return
 			}
@@ -127,7 +106,7 @@ func (r *Resolver) update(ctx context.Context, key string, used bool) (rrs []str
 			rrs, _ = res.Val.([]string)
 		}
 		r.mu.Lock()
-		r.storeLocked(key, rrs, used, err)
+		r.storeLocked(key, rrs, err)
 		r.mu.Unlock()
 	}
 	return
@@ -173,37 +152,28 @@ func (r *Resolver) getCtx() (ctx context.Context, cancel context.CancelFunc) {
 	return
 }
 
-func (r *Resolver) load(key string) (rrs []string, err error, found bool) {
+func (r *Resolver) load(key string) (rrs []string, found bool, err error) {
 	r.mu.RLock()
-	var entry *cacheEntry
-	entry, found = r.cache[key]
+	entry, found := r.cache.Get(key)
 	if !found {
 		r.mu.RUnlock()
 		return
 	}
-	rrs = entry.rrs
-	err = entry.err
-	used := entry.used
+	rrs = entry.(*cacheEntry).rrs
+	err = entry.(*cacheEntry).err
 	r.mu.RUnlock()
-	if !used {
-		r.mu.Lock()
-		entry.used = true
-		r.mu.Unlock()
-	}
-	return rrs, err, true
+	return rrs, true, err
 }
 
-func (r *Resolver) storeLocked(key string, rrs []string, used bool, err error) {
-	if entry, found := r.cache[key]; found {
+func (r *Resolver) storeLocked(key string, rrs []string, err error) {
+	if entry, found := r.cache.Get(key); found {
 		// Update existing entry in place
-		entry.rrs = rrs
-		entry.err = err
-		entry.used = used
+		entry.(*cacheEntry).rrs = rrs
+		entry.(*cacheEntry).err = err
 		return
 	}
-	r.cache[key] = &cacheEntry{
-		rrs:  rrs,
-		err:  err,
-		used: used,
-	}
+	r.cache.Add(key, &cacheEntry{
+		rrs: rrs,
+		err: err,
+	})
 }
