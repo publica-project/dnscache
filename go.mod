@@ -1,4 +1,4 @@
-module github.com/rs/dnscache
+module github.com/publica-project/dnscache
 
 go 1.12
 
