@@ -13,7 +13,7 @@ The dnscache package provides a DNS cache layer to Go's `net.Resolver`.
 Install using the "go get" command:
 
 ```
-go get -u github.com/rs/dnscache
+go get -u github.com/publica-project/dnscache
 ```
 
 # Usage

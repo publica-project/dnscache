@@ -38,6 +38,7 @@ type cacheEntry struct {
 	err error
 }
 
+// NewDNSResolver create a new Resolver with the given cacheSize.
 func NewDNSResolver(cacheSize int) *Resolver {
 	cache, _ := lru.New(cacheSize)
 	return &Resolver{
