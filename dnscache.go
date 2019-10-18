@@ -178,3 +178,8 @@ func (r *Resolver) storeLocked(key string, rrs []string, err error) {
 		err: err,
 	})
 }
+
+// GetCacheKeys returns the keys in the lru cache.
+func (r *Resolver) GetCacheKeys() []interface{} {
+	return r.cache.Keys()
+}
